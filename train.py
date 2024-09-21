@@ -4,6 +4,8 @@ import chess
 import pickle
 from tqdm import tqdm
 from neural_net import ACTION_SPACE, NeuralNetwork
+import os
+
 
 class MCTS:
     def __init__(self, exploration_factor=1):
@@ -25,7 +27,7 @@ class MCTS:
         s = state.fen()
         if state.is_game_over():
             if state.is_checkmate():
-                value = [-1, 1][s.outcome().winner == (s.split(' ')[1] == 'w')]
+                value = [-1, 1][state.outcome().winner == (s.split(' ')[1] == 'w')]
                 return -value
             else:
                 return 0
@@ -34,7 +36,7 @@ class MCTS:
             self.Q_table[s] = {}
             legal_moves = [*map(str, state.legal_moves)]
             self.N[s] = {a: 1*(a in legal_moves) for a in ACTION_SPACE}
-            value, p = model(s)
+            value, p = model.evaluate(s)
             self.policy[s] = p.tolist()[0]
             self.visited.add(s)
             return -value
@@ -66,25 +68,26 @@ class MCTS:
 
 
 class Trainer:
-    def __init__(self, model, win_threshold=0.5, batch_size=256):
-        self.model = model
-        self.target = self.model
-        self.mcts = MCTS()
+    def __init__(self, win_threshold=0.5):
+        self.model = NeuralNetwork()
+        self.target = NeuralNetwork()
 
         self.threshold = win_threshold
         self.memory = []
-        self.batch_size = batch_size
+        self.losses = []
+    
+    def load(self, filename="target.pth"):
+        if os.path.exists(filename):
+            self.model.load_model(filename)
+            self.target.load_model(filename)
 
-    def update_memory(self, episodes=10):
+    def update_memory(self, episodes=5):
         for _ in range(episodes):
             self.memory += self.run_episode(self.model)
+        random.shuffle(self.memory)
     
     def clear_memory(self):
         self.memory = []
-
-    def save(self):
-        self.mcts.save_tree("tree.pkl")
-        self.target.save_model("model.pth")
 
     def pit(self, games=100):
         wins = 0
@@ -98,40 +101,42 @@ class Trainer:
                 player = not player
             while not state.is_game_over():
                 if state.turn:
-                    a = white.best_move(state)
+                    a = white.choose_move(state)
                 else:
-                    a = black.best_move(state)
+                    a = black.choose_move(state)
                 state.push_uci(a)
             if state.is_checkmate() and state.outcome().winner == player:
                 wins += 1
         return wins/games
 
-    def learn_policy(self, iterations=100, verbose=False):
+    def learn_policy(self, iterations, verbose=False):
         iterator = range(iterations)
-        
+
         win_rate = 0.
         loss = 0.
         if verbose:
             # display the win rate and loss
-            iterator = tqdm(iterator, desc=f"Win Rate: {win_rate}, NN Loss: {loss}")
+            iterator = tqdm(iterator)
         for _ in iterator:
             self.update_memory()
-            self.model.update_weights(self.memory)
+            loss = self.model.update_weights(self.memory)
             win_rate = self.pit()
+            print(f"\nwin rate: {win_rate} batch loss: {loss}")
             
             if win_rate > self.threshold:
-                self.target = self.model
+                self.target.load_state_dict(self.model.state_dict())
+                self.target.save_model("target.pth")
             self.clear_memory()
-            self.save()
 
-    def run_episode(self, model):
+    def run_episode(self, model, depth=5):
         state = chess.Board()
         snapshot = []
         mcts = MCTS()
 
         while not state.is_game_over():
             s = state.fen()
-            mcts.search(state.copy(), model)
+            for _ in range(depth):
+                mcts.search(chess.Board(s), model)
             policy = mcts.tree_policy(s, ACTION_SPACE)
             snapshot.append((s, policy, None))
             legal_moves = [*map(str, state.legal_moves)]
@@ -150,7 +155,7 @@ class Trainer:
         return snapshot
 
 if __name__ == "__main__":
-    model = NeuralNetwork()
-    trainer = Trainer(model)
+    trainer = Trainer()
+    trainer.load()
 
-    trainer.learn_policy(verbose=True)
+    trainer.learn_policy(iterations=100, verbose=True)
