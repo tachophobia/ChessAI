@@ -1,10 +1,14 @@
 import math
 import random
-import chess
 import pickle
-from tqdm import tqdm
-from neural_net import ACTION_SPACE, NeuralNetwork
 import os
+import concurrent.futures
+import multiprocessing
+
+import chess
+from tqdm import tqdm
+
+from neural_net import ACTION_SPACE, NeuralNetwork
 
 class MCTS:
     def __init__(self, exploration_factor=1):
@@ -103,37 +107,43 @@ class Trainer:
         draws = 0
         moves = []
 
-        games = range(games)
-        if verbose:
-            print(f"Starting {len(games)} games")
-            games = tqdm(games)
-        for _ in games:
-            state = chess.Board()
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            results = list(executor.map(self.run_game, [None]*games))
 
-            player = True
-            white, black = self.model, self.target
-            if random.random() < 0.5:
-                white, black = black, white
-                player = not player
-            move = 0
-            while not state.is_game_over():
-                if state.turn:
-                    a = white.choose_move(state)
-                else:
-                    a = black.choose_move(state)
-                    move += 1
-                state.push_uci(a)
-            moves.append(move)
-            if state.is_checkmate() and state.outcome().winner == player:
+        for winner, move in results:
+            if winner == 1:
                 wins += 1
-            else:
+            elif winner == 0:
                 draws += 1
-        games = len(games)
-        win_rate, draw_rate, avg_moves = wins/games, draws/games, sum(moves)/games
+            moves.append(move)
+        win_rate = wins/games 
 
         if verbose:
-            print(f"Win rate: {win_rate:.2f}, Draw rate: {draw_rate:.2f}, Avg moves: {avg_moves:.2f}")
+            draw_rate, avg_moves = draws/games, sum(moves)/games
+            print(f"win rate: {win_rate:.2f}, draw rate: {draw_rate:.2f}, avg moves: {avg_moves:.2f}")
         return win_rate
+    
+    def run_game(self, _):
+        state = chess.Board()
+
+        player = True
+        white, black = self.model, self.target
+        if random.random() < 0.5:
+            white, black = black, white
+            player = not player
+        move = 0
+        while not state.is_game_over():
+            if state.turn:
+                a = white.choose_move(state)
+            else:
+                a = black.choose_move(state)
+                move += 1
+            state.push_uci(a)
+        
+        if state.is_checkmate():
+            return [-1, 1][state.outcome().winner == player], move
+        else:
+            return 0, move
 
     def learn_policy(self, iterations, verbose=True):
         iterator = range(iterations)
@@ -181,5 +191,9 @@ class Trainer:
         return snapshot
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn")
+    
     trainer = Trainer()
+    trainer.load("model.pth")
+    trainer.target = NeuralNetwork()
     trainer.learn_policy(iterations=100, verbose=True)
