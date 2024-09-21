@@ -6,7 +6,6 @@ from tqdm import tqdm
 from neural_net import ACTION_SPACE, NeuralNetwork
 import os
 
-
 class MCTS:
     def __init__(self, exploration_factor=1):
         self.Q_table = {}
@@ -37,7 +36,7 @@ class MCTS:
             legal_moves = [*map(str, state.legal_moves)]
             self.N[s] = {a: 1*(a in legal_moves) for a in ACTION_SPACE}
             value, p = model.evaluate(s)
-            self.policy[s] = p.tolist()[0]
+            self.policy[s] = p
             self.visited.add(s)
             return -value
         
@@ -99,10 +98,16 @@ class Trainer:
     def clear_memory(self):
         self.memory = []
 
-    def pit(self, games=100):
+    def pit(self, games=100, verbose=False):
         wins = 0
+        draws = 0
         moves = []
-        for _ in range(games):
+
+        games = range(games)
+        if verbose:
+            print(f"Starting {len(games)} games")
+            games = tqdm(games)
+        for _ in games:
             state = chess.Board()
 
             player = True
@@ -121,21 +126,27 @@ class Trainer:
             moves.append(move)
             if state.is_checkmate() and state.outcome().winner == player:
                 wins += 1
-        return wins/games, sum(moves)/games
+            else:
+                draws += 1
+        games = len(games)
+        win_rate, draw_rate, avg_moves = wins/games, draws/games, sum(moves)/games
 
-    def learn_policy(self, iterations, verbose=False):
+        if verbose:
+            print(f"Win rate: {win_rate:.2f}, Draw rate: {draw_rate:.2f}, Avg moves: {avg_moves:.2f}")
+        return win_rate
+
+    def learn_policy(self, iterations, verbose=True):
         iterator = range(iterations)
 
         win_rate = 0.
         if verbose:
-            # display the win rate and loss
             iterator = tqdm(iterator)
         for _ in iterator:
             self.update_memory()
             self.losses.append(self.model.update_weights(self.memory))
-            win_rate, avg_moves = self.pit()
             if verbose:
-                print(f"\nbatch loss: {self.losses[-1]:.5f}; win rate: {win_rate}; moves per game: {avg_moves};")
+                print(f"\nbatch loss: {self.losses[-1]:.5f}")
+            win_rate = self.pit(verbose=True)
             
             if win_rate > self.threshold:
                 self.target.load_state_dict(self.model.state_dict())
@@ -171,7 +182,4 @@ class Trainer:
 
 if __name__ == "__main__":
     trainer = Trainer()
-    trainer.load("model.pth")
-    trainer.target = NeuralNetwork()
-
     trainer.learn_policy(iterations=100, verbose=True)
