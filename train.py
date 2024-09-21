@@ -71,6 +71,7 @@ class Trainer:
     def __init__(self, win_threshold=0.5):
         self.model = NeuralNetwork()
         self.target = NeuralNetwork()
+        self.mcts = MCTS()
 
         self.threshold = win_threshold
         self.memory = []
@@ -80,17 +81,27 @@ class Trainer:
         if os.path.exists(filename):
             self.model.load_model(filename)
             self.target.load_model(filename)
+        if os.path.exists('losses.pkl'):
+            with open('losses.pkl', 'rb') as f:
+                self.losses = pickle.load(f)
+    
+    def save(self):
+        with open('losses.pkl', 'wb') as f:
+            pickle.dump(self.losses, f)
+        self.model.save_model("model.pth")
 
-    def update_memory(self, episodes=5):
+    def update_memory(self, episodes=10):
         for _ in range(episodes):
             self.memory += self.run_episode(self.model)
         random.shuffle(self.memory)
+        self.mcts = MCTS()
     
     def clear_memory(self):
         self.memory = []
 
     def pit(self, games=100):
         wins = 0
+        moves = []
         for _ in range(games):
             state = chess.Board()
 
@@ -99,45 +110,49 @@ class Trainer:
             if random.random() < 0.5:
                 white, black = black, white
                 player = not player
+            move = 0
             while not state.is_game_over():
                 if state.turn:
                     a = white.choose_move(state)
                 else:
                     a = black.choose_move(state)
+                    move += 1
                 state.push_uci(a)
+            moves.append(move)
             if state.is_checkmate() and state.outcome().winner == player:
                 wins += 1
-        return wins/games
+        return wins/games, sum(moves)/games
 
     def learn_policy(self, iterations, verbose=False):
         iterator = range(iterations)
 
         win_rate = 0.
-        loss = 0.
         if verbose:
             # display the win rate and loss
             iterator = tqdm(iterator)
         for _ in iterator:
             self.update_memory()
-            loss = self.model.update_weights(self.memory)
-            win_rate = self.pit()
-            print(f"\nwin rate: {win_rate} batch loss: {loss}")
+            self.losses.append(self.model.update_weights(self.memory))
+            win_rate, avg_moves = self.pit()
+            if verbose:
+                print(f"\nbatch loss: {self.losses[-1]:.5f}; win rate: {win_rate}; moves per game: {avg_moves};")
             
             if win_rate > self.threshold:
                 self.target.load_state_dict(self.model.state_dict())
                 self.target.save_model("target.pth")
+            
+            self.save()
             self.clear_memory()
 
     def run_episode(self, model, depth=5):
         state = chess.Board()
         snapshot = []
-        mcts = MCTS()
 
         while not state.is_game_over():
             s = state.fen()
             for _ in range(depth):
-                mcts.search(chess.Board(s), model)
-            policy = mcts.tree_policy(s, ACTION_SPACE)
+                self.mcts.search(chess.Board(s), model)
+            policy = self.mcts.tree_policy(s, ACTION_SPACE)
             snapshot.append((s, policy, None))
             legal_moves = [*map(str, state.legal_moves)]
             weights = [p*(a in legal_moves) for p, a in zip(policy, ACTION_SPACE)]
@@ -156,6 +171,7 @@ class Trainer:
 
 if __name__ == "__main__":
     trainer = Trainer()
-    trainer.load()
+    trainer.load("model.pth")
+    trainer.target = NeuralNetwork()
 
     trainer.learn_policy(iterations=100, verbose=True)
