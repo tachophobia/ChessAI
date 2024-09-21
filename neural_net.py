@@ -1,9 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.cuda.amp.grad_scaler import GradScaler
+from torch.cuda.amp.autocast_mode import autocast
 
 import numpy as np
 import chess
+import os
+import random
 
 ACTION_SPACE = open('chess_possible_moves.txt', 'r').read().splitlines()
 
@@ -63,7 +67,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class NeuralNetwork(nn.Module):
-    def __init__(self, lr=1e-3, residual_blocks=20):
+    def __init__(self, lr=1e-3, residual_blocks=20, batch_size=64):
         super(NeuralNetwork, self).__init__()
         
         self.initial_conv = nn.Conv2d(17, 64, kernel_size=3, padding=1)
@@ -80,8 +84,12 @@ class NeuralNetwork(nn.Module):
 
         self.featurizer = Featurizer()
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        self.batch_size = batch_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.to(self.device)
+
+        torch.backends.cuda.matmul.allow_tf32 = True
+        self.scaler = GradScaler()
 
     def forward(self, x):
         x = self.featurizer.featurize(x)
@@ -101,6 +109,11 @@ class NeuralNetwork(nn.Module):
         
         return v, p
     
+    def evaluate(self, x):
+        self.eval()
+        with torch.no_grad():
+            return self(x)
+    
     def save_model(self, filename):
         torch.save(self.state_dict(), filename)
     
@@ -109,26 +122,47 @@ class NeuralNetwork(nn.Module):
 
     def update_weights(self, targets):
         self.train()
+        losses = []
         
-        for state, policy, reward in targets:
+        for i in range(0, len(targets), self.batch_size):
+            batch = targets[i:i + self.batch_size]
+            
+            total_loss = 0.
+            
+            for state, policy, reward in batch:
+                with autocast():
+                    predicted_v, predicted_p = self(state)
+                    policy = torch.tensor(policy).to(self.device)
+                    reward = torch.tensor([[reward]]).to(self.device)
+                    
+                    value_loss = torch.square(predicted_v - reward).mean()
+                    policy_loss = -torch.sum(policy * torch.log(predicted_p + 1e-8), dim=1).mean()
+
+                    total_loss += value_loss
+                    total_loss += policy_loss
+            
+            total_loss /= len(batch)
+            losses.append(float(total_loss))
+            
             self.optimizer.zero_grad()
-            predicted_v, predicted_p = self(state)
-            policy = torch.tensor(policy).to(self.device)
-            reward = torch.tensor([[reward]]).to(self.device)
-            value_loss = torch.square(predicted_v - reward)
-            policy_loss = -torch.sum(policy * torch.log(predicted_p + 1e-8), dim=1).mean()
+            self.scaler.scale(total_loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
-            loss = value_loss + policy_loss
-
-            loss.backward()
-            self.optimizer.step()
+            del total_loss, value_loss, policy_loss, predicted_v, predicted_p
+            torch.cuda.empty_cache()
         
+        return np.mean(losses)
     
-    def best_move(self, state):
+    def choose_move(self, state):
         self.eval()
         with torch.no_grad():
             _, p = self(state.fen())
             p = p.tolist()[0]
             legal_moves = [*map(str, state.legal_moves)]
             p = [(p, a) for p, a in zip(p, ACTION_SPACE) if a in legal_moves]
-            return max(p)[1]
+            weights = [p for p, _ in p]
+            actions = [a for _, a in p]
+            if sum(weights) == 0:
+                return random.choice(actions)
+            return random.choices(actions, weights=weights)[0]
