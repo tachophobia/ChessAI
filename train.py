@@ -27,8 +27,7 @@ class MCTS:
         s = state.fen()
         if state.is_game_over():
             if state.is_checkmate():
-                value = [-1, 1][state.outcome().winner == (s.split(' ')[1] == 'w')]
-                return -value
+                return -1
             else:
                 return 0
         
@@ -55,26 +54,17 @@ class MCTS:
         counts = self.N[state]
         total = sum(counts.values())
         return [counts[a]/total for a in action_space]
-    
-    def save_tree(self, filename):
-        if not filename.endswith('.pkl'):
-            filename += '.pkl'
-        with open(filename, 'wb') as f:
-            pickle.dump(self, f)
-    
-    def load_tree(self, filename):
-        with open(filename, 'rb') as f:
-            self = pickle.load(f)
 
 
 class Trainer:
-    def __init__(self, win_threshold=0.5):
+    def __init__(self):
         self.model = NeuralNetwork()
         self.target = NeuralNetwork()
 
-        self.threshold = win_threshold
+        self.threshold = 0.
         self.memory = []
         self.losses = []
+        self.mcts = MCTS()
     
     def load(self, filename="target.pth"):
         if os.path.exists(filename):
@@ -89,8 +79,10 @@ class Trainer:
             pickle.dump(self.losses, f)
         self.model.save_model("model.pth")
 
-    def update_memory(self):
-        self.memory.extend(self.run_episode(self.model))
+    def update_memory(self, episodes=10):
+        for _ in range(episodes):
+            self.memory.extend(self.run_episode(self.model))
+        self.mcts = MCTS()
     
     def clear_memory(self):
         self.memory = []
@@ -100,7 +92,7 @@ class Trainer:
         draws = 0
         moves = []
 
-        results = [self.run_game(_) for _ in range(games)]
+        results = [self.run_game() for _ in range(games)]
 
         for winner, move in results:
             if winner == 1:
@@ -108,14 +100,15 @@ class Trainer:
             elif winner == 0:
                 draws += 1
             moves.append(move)
-        win_rate = wins/games 
+        losses = games-wins-draws
+        lose_rate = losses/games
 
         if verbose:
-            draw_rate, avg_moves = draws/games, sum(moves)/games
-            print(f"win rate: {win_rate:.2f}, draw rate: {draw_rate:.2f}, avg moves: {avg_moves:.2f}")
-        return win_rate
+            win_rate, draw_rate, avg_moves = wins/games, draws/games, sum(moves)/games
+            print(f"win rate: {win_rate:.2f}, draw rate: {draw_rate:.2f}, lose rate: {lose_rate:.2f}, avg moves: {avg_moves:.2f}")
+        return lose_rate
     
-    def run_game(self, _):
+    def run_game(self, collect_state=False):
         state = chess.Board()
 
         player = True
@@ -133,17 +126,20 @@ class Trainer:
             state.push_uci(a)
         
         if state.is_checkmate():
-            return [-1, 1][state.outcome().winner == player], move
+            outcome = [-1, 1][state.outcome().winner == player]
         else:
-            return 0, move
+            outcome = 0
+        
+        if collect_state:
+            return state, player, outcome
+        return outcome, move
 
-    def learn_policy(self, verbose=True, iterations=100):
-        win_rate = 0.
+    def learn_policy(self, iterations, verbose=True):
         initial = time.perf_counter()
         for it in range(iterations):
             start = time.perf_counter()
             if verbose:
-                print(f"\nsimulating tree {it+1}...")
+                print(f"\nsimulating trees {it+1}...")
             self.update_memory()
             if verbose:
                 now = time.perf_counter()
@@ -151,25 +147,24 @@ class Trainer:
             self.losses.append(self.model.update_weights(self.memory))
             if verbose:
                 print(f"batch loss: {self.losses[-1]:.5f}")
-            win_rate = self.pit(verbose=True)
+            lose_rate = self.pit(verbose=True)
             
-            if win_rate > self.threshold:
+            if lose_rate <= self.threshold:
                 self.target.load_state_dict(self.model.state_dict())
                 self.target.save_model("target.pth")
             
             self.save()
             self.clear_memory()
 
-    def run_episode(self, model, depth=30):
+    def run_episode(self, model, depth=100):
         state = chess.Board()
         snapshot = []
-        mcts = MCTS()
-
+        
         while not state.is_game_over():
             s = state.fen()
             for _ in range(depth):
-                mcts.search(chess.Board(s), model)
-            policy = mcts.tree_policy(s, ACTION_SPACE)
+                self.mcts.search(chess.Board(s), model)
+            policy = self.mcts.tree_policy(s, ACTION_SPACE)
             snapshot.append((s, policy, None))
             legal_moves = [*map(str, state.legal_moves)]
             weights = [p*(a in legal_moves) for p, a in zip(policy, ACTION_SPACE)]
@@ -181,13 +176,12 @@ class Trainer:
 
         reward = 0
         if state.is_checkmate():
-            reward = [-1, 1][state.outcome().winner == state.turn]
+            reward = 1
         
         snapshot = [(s, p, reward*[-1, 1][i%2==0]) for i, (s, p, _) in enumerate(snapshot[::-1])][::-1]
         return snapshot
 
 if __name__ == "__main__":
     trainer = Trainer()
-    trainer.load("model.pth")
-    trainer.target = NeuralNetwork()
+    trainer.load()
     trainer.learn_policy(iterations=1000, verbose=True)
