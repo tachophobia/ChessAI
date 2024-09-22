@@ -24,31 +24,44 @@ class MCTS:
                math.sqrt(sum(self.N[state].values())/(1+self.N[state][action]))
     
     def search(self, state, model):
-        s = state.fen()
-        if state.is_game_over():
-            if state.is_checkmate():
-                return -1
-            else:
-                return 0
+        s0 = state.fen()
+        stack = [(s0, None, None)]
+        results = {}
         
-        if s not in self.visited:
-            self.Q_table[s] = {}
-            legal_moves = [*map(str, state.legal_moves)]
-            self.N[s] = {a: 1*(a in legal_moves) for a in ACTION_SPACE}
-            value, p = model.evaluate(s)
-            self.policy[s] = p
-            self.visited.add(s)
-            return -value
-        
-        a = max([*map(str, state.legal_moves)], key=lambda a: self.heuristic(s, a))
+        while stack:
+            s, prev_s, prev_a = stack.pop()
+            state = chess.Board(s)
 
-        state.push_uci(a)
-        s2 = state
-        value = self.search(s2, model)
+            if s in results:
+                if prev_s is not None:
+                    value = results[s]
+                    self.Q_table[prev_s][prev_a] = (self.N[prev_s][prev_a]*self.Q_table[prev_s][prev_a] + value)/(self.N[prev_s][prev_a]+1)
+                    self.N[prev_s][prev_a] += 1
+                    results[prev_s] = -value
+                continue
 
-        self.Q_table[s][a] = (self.N[s][a]*self.Q_table[s][a] + value)/(self.N[s][a]+1)
-        self.N[s][a] += 1
-        return -value
+            stack.append((s, prev_s, prev_a))
+            if state.is_game_over():
+                results[s] = [0, -1][state.is_checkmate()]
+                continue
+            
+            if s not in self.visited:
+                self.Q_table[s] = {}
+                legal_moves = [*map(str, state.legal_moves)]
+                self.N[s] = {a: 1*(a in legal_moves) for a in ACTION_SPACE}
+                value, p = model.evaluate(s)
+                self.policy[s] = p
+                self.visited.add(s)
+                results[s] = -value
+                continue
+            
+            a = max([*map(str, state.legal_moves)], key=lambda a: self.heuristic(s, a))
+
+            state.push_uci(a)
+            s2 = state.fen()
+            stack.append((s2, s, a))
+
+        return results[s0]
     
     def tree_policy(self, state, action_space):
         counts = self.N[state]
@@ -79,7 +92,7 @@ class Trainer:
             pickle.dump(self.losses, f)
         self.model.save_model("model.pth")
 
-    def update_memory(self, episodes=10):
+    def update_memory(self, episodes=3):
         for _ in range(episodes):
             self.memory.extend(self.run_episode(self.model))
         self.mcts = MCTS()
@@ -183,5 +196,4 @@ class Trainer:
 
 if __name__ == "__main__":
     trainer = Trainer()
-    trainer.load()
     trainer.learn_policy(iterations=1000, verbose=True)
