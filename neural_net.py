@@ -88,15 +88,15 @@ class NeuralNetwork(nn.Module):
         )
         
         self.fc_v1 = nn.Linear(64 * 8 * 8, 256)
-        self.fc_v2 = nn.Linear(256, 1) 
+        self.fc_v2 = nn.Linear(256, 1)
         self.fc_p1 = nn.Linear(64 * 8 * 8, 256) 
         self.fc_p2 = nn.Linear(256, 1968)
 
         self.featurizer = Featurizer()
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         self.batch_size = batch_size
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.to(self.device)
+
+        self.to_gpu()
 
         torch.backends.cuda.matmul.allow_tf32 = True
         self.scaler = GradScaler()
@@ -119,14 +119,26 @@ class NeuralNetwork(nn.Module):
         
         return v, p
     
+    def to_cpu(self):
+        self.device = torch.device('cpu')
+        self.to(self.device)
+
+    def to_gpu(self):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(self.device)
+    
     def evaluate(self, x):
         self.eval()
+        self.to_cpu()
+        
         with torch.no_grad():
-            v, p = self(x)
+            v, p = self.forward(x)
             p = p.tolist()[0]
             if x.split()[1] == 'b':
                 p = sorted(p, key=lambda a: TRANSITIONS[p.index(a)])
-            return v, p
+        self.to_gpu()
+        
+        return v, p
     
     def save_model(self, filename):
         torch.save(self.state_dict(), filename)
@@ -168,7 +180,7 @@ class NeuralNetwork(nn.Module):
 
             del total_loss, value_loss, policy_loss, predicted_v, predicted_p
             torch.cuda.empty_cache()
-        
+            
         return np.mean(losses)
     
     def choose_move(self, state):
@@ -176,7 +188,9 @@ class NeuralNetwork(nn.Module):
         if not state.turn:
             state = state.mirror()
             mirrored = True
+        
         self.eval()
+
         with torch.no_grad():
             _, p = self(state.fen())
             p = p.tolist()[0]
