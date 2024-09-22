@@ -2,8 +2,6 @@ import math
 import random
 import pickle
 import os
-import concurrent.futures
-import multiprocessing
 
 import chess
 from tqdm import tqdm
@@ -93,7 +91,7 @@ class Trainer:
             pickle.dump(self.losses, f)
         self.model.save_model("model.pth")
 
-    def update_memory(self, episodes=10):
+    def update_memory(self, episodes=25):
         for _ in range(episodes):
             self.memory += self.run_episode(self.model)
         random.shuffle(self.memory)
@@ -107,8 +105,7 @@ class Trainer:
         draws = 0
         moves = []
 
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = list(executor.map(self.run_game, [None]*games))
+        results = [self.run_game(None) for _ in range(games)]
 
         for winner, move in results:
             if winner == 1:
@@ -165,7 +162,7 @@ class Trainer:
             self.save()
             self.clear_memory()
 
-    def run_episode(self, model, depth=5):
+    def run_episode(self, model, depth=2):
         state = chess.Board()
         snapshot = []
 
@@ -190,9 +187,7 @@ class Trainer:
         snapshot = [(s, p, reward*[-1, 1][i%2==0]) for i, (s, p, _) in enumerate(snapshot[::-1])][::-1]
         return snapshot
 
-if __name__ == "__main__":
-    multiprocessing.set_start_method("spawn")
-    
+if __name__ == "__main__":    
     trainer = Trainer()
     trainer.load("model.pth")
     trainer.target = NeuralNetwork()
