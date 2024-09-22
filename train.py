@@ -2,9 +2,8 @@ import math
 import random
 import pickle
 import os
-
+import time
 import chess
-from tqdm import tqdm
 
 from neural_net import ACTION_SPACE, NeuralNetwork
 
@@ -72,7 +71,6 @@ class Trainer:
     def __init__(self, win_threshold=0.5):
         self.model = NeuralNetwork()
         self.target = NeuralNetwork()
-        self.mcts = MCTS()
 
         self.threshold = win_threshold
         self.memory = []
@@ -91,21 +89,18 @@ class Trainer:
             pickle.dump(self.losses, f)
         self.model.save_model("model.pth")
 
-    def update_memory(self, episodes=25):
-        for _ in range(episodes):
-            self.memory += self.run_episode(self.model)
-        random.shuffle(self.memory)
-        self.mcts = MCTS()
+    def update_memory(self):
+        self.memory.extend(self.run_episode(self.model))
     
     def clear_memory(self):
         self.memory = []
 
-    def pit(self, games=100, verbose=False):
+    def pit(self, games=50, verbose=False):
         wins = 0
         draws = 0
         moves = []
 
-        results = [self.run_game(None) for _ in range(games)]
+        results = [self.run_game(_) for _ in range(games)]
 
         for winner, move in results:
             if winner == 1:
@@ -142,17 +137,20 @@ class Trainer:
         else:
             return 0, move
 
-    def learn_policy(self, iterations, verbose=True):
-        iterator = range(iterations)
-
+    def learn_policy(self, verbose=True, iterations=100):
         win_rate = 0.
-        if verbose:
-            iterator = tqdm(iterator)
-        for _ in iterator:
+        initial = time.perf_counter()
+        for it in range(iterations):
+            start = time.perf_counter()
+            if verbose:
+                print(f"\nsimulating tree {it+1}...")
             self.update_memory()
+            if verbose:
+                now = time.perf_counter()
+                print(f"time taken per tree: {now-start:.1f}s\ntotal time: {now-initial:.1f}s\nmemory size: {len(self.memory)}")
             self.losses.append(self.model.update_weights(self.memory))
             if verbose:
-                print(f"\nbatch loss: {self.losses[-1]:.5f}")
+                print(f"batch loss: {self.losses[-1]:.5f}")
             win_rate = self.pit(verbose=True)
             
             if win_rate > self.threshold:
@@ -162,15 +160,16 @@ class Trainer:
             self.save()
             self.clear_memory()
 
-    def run_episode(self, model, depth=2):
+    def run_episode(self, model, depth=30):
         state = chess.Board()
         snapshot = []
+        mcts = MCTS()
 
         while not state.is_game_over():
             s = state.fen()
             for _ in range(depth):
-                self.mcts.search(chess.Board(s), model)
-            policy = self.mcts.tree_policy(s, ACTION_SPACE)
+                mcts.search(chess.Board(s), model)
+            policy = mcts.tree_policy(s, ACTION_SPACE)
             snapshot.append((s, policy, None))
             legal_moves = [*map(str, state.legal_moves)]
             weights = [p*(a in legal_moves) for p, a in zip(policy, ACTION_SPACE)]
@@ -182,13 +181,13 @@ class Trainer:
 
         reward = 0
         if state.is_checkmate():
-            reward = [-1, 1][state.outcome().winner == (state.fen().split(' ')[1] == 'w')]
+            reward = [-1, 1][state.outcome().winner == state.turn]
         
         snapshot = [(s, p, reward*[-1, 1][i%2==0]) for i, (s, p, _) in enumerate(snapshot[::-1])][::-1]
         return snapshot
 
-if __name__ == "__main__":    
+if __name__ == "__main__":
     trainer = Trainer()
     trainer.load("model.pth")
     trainer.target = NeuralNetwork()
-    trainer.learn_policy(iterations=100, verbose=True)
+    trainer.learn_policy(iterations=1000, verbose=True)
