@@ -20,7 +20,8 @@ def mirror_uci(move):
 
 ACTION_SPACE = open('chess_possible_moves.txt', 'r').read().splitlines()
 MIRRORED_ACTIONS = [*map(mirror_uci, ACTION_SPACE)]
-TRANSITIONS = [ACTION_SPACE.index(a) for a in MIRRORED_ACTIONS]
+BLACK_TO_WHITE = {i: ACTION_SPACE.index(a) for i, a in enumerate(MIRRORED_ACTIONS)}
+WHITE_TO_BLACK = {v: k for k, v in BLACK_TO_WHITE.items()}
 
 class Featurizer:
     def __init__(self):
@@ -77,7 +78,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class NeuralNetwork(nn.Module):
-    def __init__(self, lr=1e-3, residual_blocks=20, batch_size=64):
+    def __init__(self, lr=1e-3, residual_blocks=20, batch_size=32):
         super(NeuralNetwork, self).__init__()
         
         self.initial_conv = nn.Conv2d(18, 64, kernel_size=3, padding=1)
@@ -129,14 +130,13 @@ class NeuralNetwork(nn.Module):
     
     def evaluate(self, x):
         self.eval()
-        self.to_cpu()
         
         with torch.no_grad():
             v, p = self.forward(x)
             p = p.tolist()[0]
+            v = v.tolist()[0][0]
             if x.split()[1] == 'b':
-                p = sorted(p, key=lambda a: TRANSITIONS[p.index(a)])
-        self.to_gpu()
+                p = sorted(p, key=lambda a: BLACK_TO_WHITE[p.index(a)])
         
         return v, p
     
@@ -157,8 +157,7 @@ class NeuralNetwork(nn.Module):
             
             for state, policy, reward in batch:
                 if state.split()[1] == 'b':
-                    # policy action probs are in white basis, convert to black basis
-                    policy = sorted(policy, key=lambda a: TRANSITIONS.index(policy.index(a)))
+                    policy = sorted(policy, key=lambda a: WHITE_TO_BLACK[policy.index(a)])
                 with autocast():
                     predicted_v, predicted_p = self(state)
                     policy = torch.tensor(policy).to(self.device)
@@ -180,7 +179,7 @@ class NeuralNetwork(nn.Module):
 
             del total_loss, value_loss, policy_loss, predicted_v, predicted_p
             torch.cuda.empty_cache()
-            
+
         return np.mean(losses)
     
     def choose_move(self, state):
