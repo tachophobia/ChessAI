@@ -75,9 +75,9 @@ class ResidualBlock(nn.Module):
         out = F.relu(out)
         return out
 
-class NeuralNetwork(nn.Module):
-    def __init__(self, lr=1e-3, residual_blocks=20, batch_size=64):
-        super(NeuralNetwork, self).__init__()
+class Model(nn.Module):
+    def __init__(self, lr=1e-3, residual_blocks=15, batch_size=256, regularization_level=1e-3):
+        super(Model, self).__init__()
         
         self.initial_conv = nn.Conv2d(18, 64, kernel_size=3, padding=1)
         self.initial_batchnorm = nn.BatchNorm2d(64)
@@ -94,6 +94,7 @@ class NeuralNetwork(nn.Module):
         self.featurizer = Featurizer()
         self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         self.batch_size = batch_size
+        self.c = regularization_level
 
         self.to_gpu()
 
@@ -132,7 +133,6 @@ class NeuralNetwork(nn.Module):
             v = v.tolist()[0][0]
             if x.split()[1] == 'b':
                 p = sorted(p, key=lambda a: BLACK_TO_WHITE[p.index(a)])
-        
         return v, p
     
     def save_model(self, filename):
@@ -159,9 +159,11 @@ class NeuralNetwork(nn.Module):
                 
                 value_loss = torch.square(predicted_v - reward).mean()
                 policy_loss = -torch.sum(policy * torch.log(predicted_p + 1e-8), dim=1).mean()
+                l2_regularization = self.c * sum(p.pow(2).sum() for p in self.parameters())
 
                 total_loss += value_loss
                 total_loss += policy_loss
+                total_loss += l2_regularization
             
             total_loss /= len(batch)
             losses.append(float(total_loss))
