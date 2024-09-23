@@ -3,8 +3,13 @@ import random
 import pickle
 import os
 import chess
-from tqdm import tqdm
+import time
 from neural_net import ACTION_SPACE, NeuralNetwork
+from tqdm import tqdm
+
+import multiprocessing
+import psutil
+import gc
 
 class MCTS:
     def __init__(self, exploration_factor=1):
@@ -90,9 +95,6 @@ class Trainer:
         with open('losses.pkl', 'wb') as f:
             pickle.dump(self.losses, f)
         self.model.save_model("model.pth")
-
-    def update_memory(self):
-        self.memory.extend(self.run_episode(self.model))
     
     def clear_memory(self):
         self.memory = []
@@ -144,39 +146,56 @@ class Trainer:
             return state, player, outcome
         return outcome, move
 
+    def worker(self, params, cpu):
+        psutil.Process().cpu_affinity([cpu])
+        return self.run_episode(params)
+    
     def learn_policy(self, iterations, trees=100, verbose=True):
-        for it in range(iterations):
-            iterator = range(trees)
-            if verbose: 
-                print(f"\nsimulating trees {it}...")
-                iterator = tqdm(iterator)
+        iterator = range(iterations)
+        if verbose:
+            iterator = tqdm(iterator)
 
-            for _ in iterator:
-                self.update_memory()
-            random.shuffle(self.memory)
+        cpu_count = psutil.cpu_count(logical=False)
+        processes = cpu_count - (trees % cpu_count)
+        with multiprocessing.Pool(processes=processes) as pool:
+            for it in iterator:
+                if verbose: 
+                    print(f"\nsimulating trees {it}...")
 
-            if verbose:
-                print(f"\nmemory size: {len(self.memory)}")
-            
-            batch_losses = self.model.update_weights(self.memory)
-            self.losses.extend(batch_losses)
+                start = time.perf_counter()
+                
+                for _ in range(0, trees, processes):
+                    results = pool.starmap(
+                        self.worker, [(self.model, i) for i in range(processes)])[0]
+                    self.memory.extend(results)
+                random.shuffle(self.memory)
 
-            if verbose:
-                print(f"batch loss: {sum(batch_losses)/len(batch_losses):.5f}")
-            lose_rate = self.pit(verbose=True)
-            
-            if lose_rate <= self.threshold:
-                self.target.load_state_dict(self.model.state_dict())
-                self.target.save_model("target.pth")
-            
-            self.save()
-            self.clear_memory()
+                if verbose:
+                    delta = time.perf_counter()-start
+                    print(f"time taken per tree: {delta/trees:.1f}s\ntotal time: {delta:.1f}s\nmemory size: {len(self.memory)}")
+                
+                batch_losses = self.model.update_weights(self.memory)
+                self.losses.extend(batch_losses)
+
+                if verbose:
+                    print(f"batch loss: {sum(batch_losses)/len(batch_losses):.5f}")
+                lose_rate = self.pit(verbose=True)
+                
+                if lose_rate <= self.threshold:
+                    self.target.load_state_dict(self.model.state_dict())
+                    self.target.save_model("target.pth")
+                
+                self.save()
+                self.clear_memory()
+                gc.collect()
+        
+        pool.close()
+        pool.join()
 
     def run_episode(self, model, depth=25):
         state = chess.Board()
         snapshot = []
         mcts = MCTS()
-        
         while not state.is_game_over():
             s = state.fen()
             for _ in range(depth):
@@ -194,6 +213,6 @@ class Trainer:
         return snapshot
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn")
     trainer = Trainer()
-    trainer.load()
-    trainer.learn_policy(iterations=1000, verbose=True)
+    trainer.learn_policy(iterations=80, verbose=True)
