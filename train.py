@@ -2,9 +2,8 @@ import math
 import random
 import pickle
 import os
-import time
 import chess
-
+from tqdm import tqdm
 from neural_net import ACTION_SPACE, NeuralNetwork
 
 class MCTS:
@@ -73,16 +72,16 @@ class Trainer:
     def __init__(self):
         self.model = NeuralNetwork()
         self.target = NeuralNetwork()
+        self.target.load_state_dict(self.model.state_dict())
 
         self.threshold = 0.
         self.memory = []
         self.losses = []
-        self.mcts = MCTS()
     
-    def load(self, filename="target.pth"):
-        if os.path.exists(filename):
-            self.model.load_model(filename)
-            self.target.load_model(filename)
+    def load(self):
+        self.model.load_model("model.pth")
+        if os.path.exists("target.pth"):
+            self.target.load_model("target.pth")
         if os.path.exists('losses.pkl'):
             with open('losses.pkl', 'rb') as f:
                 self.losses = pickle.load(f)
@@ -92,10 +91,8 @@ class Trainer:
             pickle.dump(self.losses, f)
         self.model.save_model("model.pth")
 
-    def update_memory(self, episodes=3):
-        for _ in range(episodes):
-            self.memory.extend(self.run_episode(self.model))
-        self.mcts = MCTS()
+    def update_memory(self):
+        self.memory.extend(self.run_episode(self.model))
     
     def clear_memory(self):
         self.memory = []
@@ -147,19 +144,25 @@ class Trainer:
             return state, player, outcome
         return outcome, move
 
-    def learn_policy(self, iterations, verbose=True):
-        initial = time.perf_counter()
+    def learn_policy(self, iterations, trees=100, verbose=True):
         for it in range(iterations):
-            start = time.perf_counter()
+            iterator = range(trees)
+            if verbose: 
+                print(f"\nsimulating trees {it}...")
+                iterator = tqdm(iterator)
+
+            for _ in iterator:
+                self.update_memory()
+            random.shuffle(self.memory)
+
             if verbose:
-                print(f"\nsimulating trees {it+1}...")
-            self.update_memory()
+                print(f"\nmemory size: {len(self.memory)}")
+            
+            batch_losses = self.model.update_weights(self.memory)
+            self.losses.extend(batch_losses)
+
             if verbose:
-                now = time.perf_counter()
-                print(f"time taken per tree: {now-start:.1f}s\ntotal time: {now-initial:.1f}s\nmemory size: {len(self.memory)}")
-            self.losses.append(self.model.update_weights(self.memory))
-            if verbose:
-                print(f"batch loss: {self.losses[-1]:.5f}")
+                print(f"batch loss: {sum(batch_losses)/len(batch_losses):.5f}")
             lose_rate = self.pit(verbose=True)
             
             if lose_rate <= self.threshold:
@@ -169,22 +172,18 @@ class Trainer:
             self.save()
             self.clear_memory()
 
-    def run_episode(self, model, depth=100):
+    def run_episode(self, model, depth=25):
         state = chess.Board()
         snapshot = []
+        mcts = MCTS()
         
         while not state.is_game_over():
             s = state.fen()
             for _ in range(depth):
-                self.mcts.search(chess.Board(s), model)
-            policy = self.mcts.tree_policy(s, ACTION_SPACE)
+                mcts.search(chess.Board(s), model)
+            policy = mcts.tree_policy(s, ACTION_SPACE)
             snapshot.append((s, policy, None))
-            legal_moves = [*map(str, state.legal_moves)]
-            weights = [p*(a in legal_moves) for p, a in zip(policy, ACTION_SPACE)]
-            if sum(weights) == 0:
-                a = random.choice(legal_moves)
-            else:
-                a = random.choices(ACTION_SPACE, weights=weights)[0]
+            a = random.choices(ACTION_SPACE, weights=policy)[0]
             state.push_uci(a)
 
         reward = 0
@@ -196,4 +195,5 @@ class Trainer:
 
 if __name__ == "__main__":
     trainer = Trainer()
+    trainer.load()
     trainer.learn_policy(iterations=1000, verbose=True)
