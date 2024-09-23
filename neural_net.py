@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp.grad_scaler import GradScaler
-from torch.cuda.amp.autocast_mode import autocast
 
 import numpy as np
 import chess
@@ -78,7 +76,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class NeuralNetwork(nn.Module):
-    def __init__(self, lr=1e-3, residual_blocks=20, batch_size=32):
+    def __init__(self, lr=1e-3, residual_blocks=20, batch_size=64):
         super(NeuralNetwork, self).__init__()
         
         self.initial_conv = nn.Conv2d(18, 64, kernel_size=3, padding=1)
@@ -98,9 +96,6 @@ class NeuralNetwork(nn.Module):
         self.batch_size = batch_size
 
         self.to_gpu()
-
-        torch.backends.cuda.matmul.allow_tf32 = True
-        self.scaler = GradScaler()
 
     def forward(self, x):
         x = self.featurizer.featurize(x)
@@ -158,29 +153,26 @@ class NeuralNetwork(nn.Module):
             for state, policy, reward in batch:
                 if state.split()[1] == 'b':
                     policy = sorted(policy, key=lambda a: WHITE_TO_BLACK[policy.index(a)])
-                with autocast():
-                    predicted_v, predicted_p = self(state)
-                    policy = torch.tensor(policy).to(self.device)
-                    reward = torch.tensor([[reward]]).to(self.device)
-                    
-                    value_loss = torch.square(predicted_v - reward).mean()
-                    policy_loss = -torch.sum(policy * torch.log(predicted_p + 1e-8), dim=1).mean()
+                predicted_v, predicted_p = self(state)
+                policy = torch.tensor(policy).to(self.device)
+                reward = torch.tensor([[reward]]).to(self.device)
+                
+                value_loss = torch.square(predicted_v - reward).mean()
+                policy_loss = -torch.sum(policy * torch.log(predicted_p + 1e-8), dim=1).mean()
 
-                    total_loss += value_loss
-                    total_loss += policy_loss
+                total_loss += value_loss
+                total_loss += policy_loss
             
             total_loss /= len(batch)
             losses.append(float(total_loss))
             
             self.optimizer.zero_grad()
-            self.scaler.scale(total_loss).backward()
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-
+            total_loss.backward()
+            self.optimizer.step()
             del total_loss, value_loss, policy_loss, predicted_v, predicted_p
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
-        return np.mean(losses)
+        return losses
     
     def choose_move(self, state):
         mirrored = False
