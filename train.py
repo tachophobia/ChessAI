@@ -83,7 +83,7 @@ class Trainer:
         self.cpu_count = psutil.cpu_count()
 
         self.threshold = 0.
-        self.memory = []
+        self.experience = []
         self.losses = []
         self.verbose = verbose
     
@@ -98,10 +98,9 @@ class Trainer:
     def save(self):
         with open('losses.pkl', 'wb') as f:
             pickle.dump(self.losses, f)
+        with open('experience.pkl', 'wb') as f:
+                pickle.dump(self.experience, f)
         self.model.save_model("model.pth")
-    
-    def clear_memory(self):
-        self.memory = []
 
     def pit(self, games=100):
         wins = 0
@@ -166,14 +165,14 @@ class Trainer:
                 results = pool.starmap(self.run_episode, [(self.model,) for _ in range(trees)])
 
             for game in results:
-                self.memory.extend(game)
-            random.shuffle(self.memory)
+                self.experience.extend(game)
+            random.shuffle(self.experience)
 
             if self.verbose:
                 delta = time.perf_counter()-start
-                print(f"time taken per tree: {delta/trees:.1f}s\nmemory size: {len(self.memory)}")
+                print(f"time taken per tree: {delta/trees:.1f}s\nexperience size: {len(self.experience)}")
             
-            batch_losses = self.model.update_weights(self.memory)
+            batch_losses = self.model.update_weights(self.experience, verbose=self.verbose)
             self.losses.extend(batch_losses)
             if self.verbose:
                 print(f"batch loss: {sum(batch_losses)/len(batch_losses):.5f}")
@@ -184,10 +183,10 @@ class Trainer:
                 self.target.save_model("target.pth")
             
             self.save()
-            self.clear_memory()
+            self.experience = []
             gc.collect()
 
-    def run_episode(self, model, depth=80):
+    def run_episode(self, model, depth=30):
         state = chess.Board()
         snapshot = []
         mcts = MCTS()
@@ -196,7 +195,7 @@ class Trainer:
             for _ in range(depth):
                 mcts.search(chess.Board(s), model)
             policy = mcts.tree_policy(s, ACTION_SPACE)
-            snapshot.append((s, policy, None))
+            snapshot.append((s, policy))
             a = random.choices(ACTION_SPACE, weights=policy)[0]
             state.push_uci(a)
 
@@ -204,7 +203,7 @@ class Trainer:
         if state.is_checkmate():
             reward = 1
         
-        snapshot = [(s, p, reward*[-1, 1][i%2==0]) for i, (s, p, _) in enumerate(snapshot[::-1])][::-1]
+        snapshot = [(s, p, reward*[-1, 1][i%2==0]) for i, (s, p) in enumerate(snapshot[::-1])][::-1]
         return snapshot
 
 if __name__ == "__main__":
