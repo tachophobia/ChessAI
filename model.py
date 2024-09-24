@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 import chess
 import random
+from tqdm import tqdm
 
 rank_map = {
     '1': '8', '2': '7', '3': '6', '4': '5',
@@ -76,7 +77,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class Model(nn.Module):
-    def __init__(self, lr=1e-3, residual_blocks=15, batch_size=128, regularization_level=1e-4):
+    def __init__(self, lr=1e-3, residual_blocks=5, batch_size=512, regularization_level=1e-4):
         super(Model, self).__init__()
         
         self.initial_conv = nn.Conv2d(18, 64, kernel_size=3, padding=1)
@@ -88,11 +89,12 @@ class Model(nn.Module):
         
         self.fc_v1 = nn.Linear(64 * 8 * 8, 256)
         self.fc_v2 = nn.Linear(256, 1)
-        self.fc_p1 = nn.Linear(64 * 8 * 8, 256) 
-        self.fc_p2 = nn.Linear(256, 1968)
+        self.fc_p1 = nn.Linear(64 * 8 * 8, 2048) 
+        self.fc_p2 = nn.Linear(2048, 1968)
 
         self.featurizer = Featurizer()
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        self.lr = lr
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         self.batch_size = batch_size
         self.c = regularization_level
 
@@ -108,10 +110,10 @@ class Model(nn.Module):
         
         x = x.view(x.size(0), -1)
         
-        v = F.relu(self.fc_v1(x))
+        v = F.dropout(F.relu(self.fc_v1(x)), p=0.3, training=self.training)
         v = torch.tanh(self.fc_v2(v))
         
-        p = F.relu(self.fc_p1(x))
+        p = F.dropout(F.relu(self.fc_p1(x)), p=0.3, training=self.training)
         p = F.softmax(self.fc_p2(p), dim=1)
         
         return v, p
@@ -141,11 +143,15 @@ class Model(nn.Module):
     def load_model(self, filename):
         self.load_state_dict(torch.load(filename))
 
-    def update_weights(self, targets):
+    def update_weights(self, targets, verbose=False):
         self.train()
         losses = []
         
-        for i in range(0, len(targets), self.batch_size):
+        iterator = range(0, len(targets), self.batch_size)
+        if verbose:
+            print("\nupdating weights...")
+            iterator = tqdm(iterator)
+        for i in iterator:
             batch = targets[i:i + self.batch_size]
             
             total_loss = 0.
@@ -158,12 +164,12 @@ class Model(nn.Module):
                 reward = torch.tensor([[reward]]).to(self.device)
                 
                 value_loss = torch.square(predicted_v - reward).mean()
-                policy_loss = -torch.sum(policy * torch.log(predicted_p + 1e-8), dim=1).mean()
-                l2_regularization = self.c * sum(p.pow(2).sum() for p in self.parameters())
+                policy_loss = torch.sum(-policy * torch.log(predicted_p + 1e-8), dim=1).mean()
+                # l2_regularization = self.c * sum(p.pow(2).sum() for p in self.parameters())
 
                 total_loss += value_loss
                 total_loss += policy_loss
-                total_loss += l2_regularization
+                # total_loss += l2_regularization
             
             total_loss /= len(batch)
             losses.append(float(total_loss))
@@ -172,6 +178,8 @@ class Model(nn.Module):
             total_loss.backward()
             self.optimizer.step()
         torch.cuda.empty_cache()
+        # prepare the optimizer for new dataset
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
 
         return losses
     
