@@ -76,7 +76,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class Model(nn.Module):
-    def __init__(self, lr=1e-3, residual_blocks=15, batch_size=256, regularization_level=1e-3):
+    def __init__(self, lr=1e-3, residual_blocks=15, batch_size=128, regularization_level=1e-4):
         super(Model, self).__init__()
         
         self.initial_conv = nn.Conv2d(18, 64, kernel_size=3, padding=1)
@@ -171,7 +171,6 @@ class Model(nn.Module):
             self.optimizer.zero_grad()
             total_loss.backward()
             self.optimizer.step()
-            del total_loss, value_loss, policy_loss, predicted_v, predicted_p
         torch.cuda.empty_cache()
 
         return losses
