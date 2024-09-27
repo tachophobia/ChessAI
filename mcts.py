@@ -4,11 +4,11 @@ import math
 import chess
 
 class MCTS:
-    def __init__(self, exploration_factor=50, cache_size=10000):
+    def __init__(self, exploration_factor=1, cache_size=20000):
         self.Q_table = defaultdict(lambda: defaultdict(float))
         self.N = defaultdict(lambda: defaultdict(int))
         self.policy = defaultdict(list)
-        self.c = exploration_factor
+        self.c = exploration_factor*len(ACTION_SPACE) # rescale by policy size
         
         self.cache_size = cache_size
         self.access_counter = 0
@@ -16,10 +16,9 @@ class MCTS:
     
     # UCB1
     def heuristic(self, state, action):
-        action_idx = ACTION_SPACE.index(action)
         total_visits = sum(self.N[state].values())
         action_visits = self.N[state][action]
-        exploration_term = self.c * self.policy[state][action_idx] * math.sqrt(total_visits / (1 + action_visits))
+        exploration_term = self.c * self.policy[state][ACTION_SPACE.index(action)] * math.sqrt(total_visits / (1 + action_visits))
         return self.Q_table[state][action] + exploration_term
     
     def search(self, state, model):
