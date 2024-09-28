@@ -35,7 +35,6 @@ class MCTS:
 
         while stack:
             node = stack.pop()
-            node = self.visited.get(node.fen, node)
 
             if node.fen in results:
                 if node.parent is not None:
@@ -62,6 +61,7 @@ class MCTS:
                 continue
             
             state = node.state.copy()
+            node = self.visited[node.fen]
             
             a = max(node.legal_moves, key=lambda a: self.heuristic(node, a))
             state.push_uci(a)
