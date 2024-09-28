@@ -1,79 +1,113 @@
-from collections import defaultdict
 from model import ACTION_SPACE
-import math
 import chess
+import numpy as np
+
+class Node:
+    def __init__(self, state: chess.Board, parent: tuple):
+        self.parent, self.prev_action = parent
+
+        self.state = state
+        self.fen = state.fen()
+        self.legal_moves = [*map(str, state.legal_moves)]
+
+        self.children = []
+        self.N = {} # action visits
+        self.Q = {} # action values
+        
 
 class MCTS:
-    def __init__(self, exploration_factor=1, cache_size=20000):
-        self.Q_table = defaultdict(lambda: defaultdict(float))
-        self.N = defaultdict(lambda: defaultdict(int))
-        self.policy = defaultdict(list)
-        self.c = exploration_factor*len(ACTION_SPACE) # rescale by policy size
-        
-        self.cache_size = cache_size
-        self.access_counter = 0
-        self.state_access = {}
+    def __init__(self, exploration_factor=1):
+        self.policy = {}
+        self.visited = {}
+        self.c = exploration_factor
+        self.root = None
     
     # UCB1
-    def heuristic(self, state, action):
-        total_visits = sum(self.N[state].values())
-        action_visits = self.N[state][action]
-        exploration_term = self.c * self.policy[state][ACTION_SPACE.index(action)] * math.sqrt(total_visits / (1 + action_visits))
-        return self.Q_table[state][action] + exploration_term
+    def heuristic(self, node: Node, action: str):
+        if action not in node.Q:
+            node.Q[action] = 0.
+        return node.Q[action] + self.c * self.policy[node.fen][ACTION_SPACE.index(action)] * \
+                                np.sqrt(sum(node.N.values()) / (1 + node.N[action]))
     
-    def search(self, state, model):
-        s0 = state.fen()
+    def search(self, model):
         results = {}
-        stack = [(s0, None, None)]
-        
+        stack = [self.root]
+
         while stack:
-            s, prev_s, prev_a = stack.pop()
-            state = chess.Board(s)
-            
-            self.prune_cache()
-            
-            if s in results:
-                if prev_s is not None:
-                    value = results[s]
-                    self.update_q_table(prev_s, prev_a, value)
-                    results[prev_s] = -value
-                continue
-            
-            stack.append((s, prev_s, prev_a))
-            if state.is_game_over():
-                results[s] = [0, -1][state.is_checkmate()]
-                continue
-            
-            if s not in self.Q_table:
-                legal_moves = [move.uci() for move in state.legal_moves]
-                v, p = model.evaluate(s)
+            node = stack.pop()
 
-                self.N[s] = {a: 1*(a in legal_moves) for a in ACTION_SPACE}
-                self.policy[s] = p
-                results[s] = -v
-
-                self.state_access[s] = self.access_counter
-                self.access_counter += 1
+            if node.fen in results:
+                if node.parent is not None:
+                    value = results[node.fen]
+                    prev_a = node.prev_action
+                    node.parent.Q[prev_a] = (node.parent.N[prev_a] * node.parent.Q[prev_a] + value) / (node.parent.N[prev_a] + 1)
+                    node.parent.N[prev_a] += 1
+                    results[node.parent.fen] = -value
                 continue
             
-            a = max([move.uci() for move in state.legal_moves], key=lambda a: self.heuristic(s, a))
+            stack.append(node)
+            if node.state.is_game_over():
+                results[node.fen] = [0, -1][node.state.is_checkmate()]
+                continue
+            
+            if node.fen not in self.visited:
+                v, p = model.evaluate(node.fen)
+                node.N = {a: 1*(a in node.legal_moves) for a in ACTION_SPACE}
+                self.policy[node.fen] = p
+                if node == self.root:
+                    self.apply_dirichlet_noise(node.fen)
+                results[node.fen] = -v
+                self.visited[node.fen] = node
+                continue
+            
+            state = node.state.copy()
+            node = self.visited[node.fen]
+            a = max(node.legal_moves, key=lambda a: self.heuristic(node, a))
             state.push_uci(a)
+
             s2 = state.fen()
-            stack.append((s2, s, a))
+            child = [c for c in node.children if c.fen == s2]
+            if child:
+                child = child[0]
+            else:
+                child = child = Node(state, (node, a))
+
+            node.children.append(child)
+            stack.append(child)
+
+    def select_action(self, state, tau=1):
+        counts = self.visited[state].N
+        visit_counts = np.array([counts[a] for a in ACTION_SPACE]) ** (1/tau)
+        visit_counts /= visit_counts.sum()
+        return np.random.choice(ACTION_SPACE, p=visit_counts)
     
-    def prune_cache(self):
-        if len(self.state_access) >= self.cache_size:
-            oldest_state = min(self.state_access, key=self.state_access.get)
-            del self.Q_table[oldest_state]
-            del self.N[oldest_state]
-            del self.policy[oldest_state]
-            del self.state_access[oldest_state]
-    
-    def update_q_table(self, prev_s, prev_a, value):
-        self.Q_table[prev_s][prev_a] = (self.N[prev_s][prev_a] * self.Q_table[prev_s][prev_a] + value) / (self.N[prev_s][prev_a] + 1)
-        self.N[prev_s][prev_a] += 1
-    
-    def tree_policy(self, state, action_space):
-        counts = self.N[state]
+    def action_probabilities(self, state: str):
+        counts = self.visited[state].N
         total = sum(counts.values())
-        return [counts[a] / total for a in action_space]
+        return [counts[a] / total for a in ACTION_SPACE]
+    
+    def apply_dirichlet_noise(self, state: str, alpha=0.03):
+        dirichlet_noise = np.random.dirichlet([alpha] * len(self.policy[state]))
+        self.policy[state] = 0.75 * np.array(self.policy[state]) + 0.25 * dirichlet_noise
+
+    def destroy_tree(self, node):
+        del self.visited[node.fen]
+        del self.policy[node.fen]
+        for child in node.children:
+            self.destroy_tree(child)
+        node.children = []
+        node.parent = None
+
+    def discard_above(self, state: str):
+        new_root = self.visited[state]
+        # disconnect the new root from the tree
+        parent = new_root.parent
+        new_root.parent = None
+        parent.children.remove(new_root)
+        
+        while parent:
+            parent = parent.parent
+        self.destroy_tree(parent)
+    
+    def set_root(self, state):
+        self.root = Node(state, (None, None))
