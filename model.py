@@ -77,7 +77,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class Model(nn.Module):
-    def __init__(self, lr=1e-3, residual_blocks=3, batch_size=512, regularization_level=1e-4):
+    def __init__(self, lr=1e-3, residual_blocks=5, batch_size=512, regularization_level=1e-4):
         super(Model, self).__init__()
         
         self.initial_conv = nn.Conv2d(18, 64, kernel_size=3, padding=1)
@@ -90,7 +90,7 @@ class Model(nn.Module):
         self.fc_v1 = nn.Linear(64 * 8 * 8, 256)
         self.fc_v2 = nn.Linear(256, 1)
         self.fc_p1 = nn.Linear(64 * 8 * 8, 2048) 
-        self.fc_p2 = nn.Linear(2048, 1968)
+        self.fc_p2 = nn.Linear(2048, len(ACTION_SPACE))
 
         self.lr = lr
         self.batch_size = batch_size
@@ -180,7 +180,7 @@ class Model(nn.Module):
         torch.cuda.empty_cache()
         # reset the optimizer to be adaptive for new dataset
         # weight decay is effectively just l2 regularization
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.c)
+        # self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.c)
 
         return losses
     

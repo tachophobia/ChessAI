@@ -2,14 +2,13 @@ import chess
 import random
 import pickle
 import os
-import chess
 import torch
 
 import multiprocessing
 import psutil
 import gc
 
-from model import ACTION_SPACE, Model
+from model import Model
 from mcts import MCTS
 from tqdm import tqdm
 
@@ -42,7 +41,7 @@ class Trainer:
                 pickle.dump(self.experience, f)
         self.model.save_model(self.path+"model.pth")
 
-    def pit(self, games=100):
+    def pit(self, games=50):
         wins = 0
         draws = 0
         moves = []
@@ -55,11 +54,11 @@ class Trainer:
             elif winner == 0:
                 draws += 1
             moves.append(move)
-        losses = games-wins-draws
-        lose_rate = losses/games
+        lose_rate = (games-wins-draws)/games
 
         if self.verbose:
             win_rate, draw_rate, avg_moves = wins/games, draws/games, sum(moves)/games
+            print(f"simulated {games} games")
             print(f"win rate: {win_rate:.2f}, draw rate: {draw_rate:.2f}, lose rate: {lose_rate:.2f}, avg moves: {avg_moves:.2f}")
         return lose_rate
     
@@ -89,7 +88,7 @@ class Trainer:
             return state, player, outcome
         return outcome, move
     
-    def learn_policy(self, iterations, trees=256):
+    def learn_policy(self, iterations, trees=300):
         iterator = range(iterations)
         trees = trees//self.cpu_count
         if self.verbose:
@@ -106,13 +105,12 @@ class Trainer:
 
             for _ in process:
                 with multiprocessing.Pool(processes=self.cpu_count) as pool:
-                    results.extend(pool.starmap(self.run_episode, [(self.model,) for _ in range(self.cpu_count)]))
+                    results.extend(pool.starmap(self.run_episode, [(self.target,) for _ in range(self.cpu_count)]))
                 gc.collect()
 
             for game in results:
                 self.experience.extend(game)
             random.shuffle(self.experience)
-            gc.collect()
 
             if self.verbose:
                 print(f"\nexperience size: {len(self.experience)}\nupdating weights...")
@@ -130,19 +128,24 @@ class Trainer:
             self.save()
             self.experience = []
 
-    def run_episode(self, model, depth=50):
+    def run_episode(self, model, depth=40):
         state = chess.Board()
         snapshot = []
         tree = MCTS()
         while not state.is_game_over():
+            tree.set_root(state)
             s = state.fen()
             for _ in range(depth):
-                tree.search(chess.Board(s), model)
-            policy = tree.tree_policy(s, ACTION_SPACE)
-            snapshot.append((s, policy))
-            a = random.choices(ACTION_SPACE, weights=policy)[0]
-            state.push_uci(a)
+                tree.search(model)
 
+            policy = tree.action_probabilities(s)
+            snapshot.append((s, policy))
+
+            a = tree.select_action(s, [1e-2, 1][len(snapshot) <= 30])
+            state.push_uci(a)
+            tree.discard_above(state.fen())
+        
+        del tree
         reward = 0
         if state.is_checkmate():
             reward = 1
@@ -153,7 +156,6 @@ class Trainer:
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn')
     torch.multiprocessing.set_sharing_strategy('file_system')
-
-    trainer = Trainer(verbose=True)
-    trainer.load()
+    trainer = Trainer(verbose=True, training_directory="belisarius/")
+    # trainer.load()
     trainer.learn_policy(iterations=80)

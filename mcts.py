@@ -91,24 +91,26 @@ class MCTS:
 
     def destroy_tree(self, node):
         if node:
-            del self.visited[node.fen]
-            del self.policy[node.fen]
+            if node.fen in self.visited: del self.visited[node.fen]
+            if node.fen in self.policy: del self.policy[node.fen]
             for child in node.children:
                 self.destroy_tree(child)
-            node.children = []
-            node.parent = None
+            del node
 
     def discard_above(self, state: str):
         if state in self.visited:
             new_root = self.visited[state]
-            # disconnect the new root from the tree
             parent = new_root.parent
-            new_root.parent = None
-            parent.children.remove(new_root)
-            
+            start = len(self.visited)
+
+            if parent:
+                parent.children.remove(new_root)
+
             while parent:
-                parent = parent.parent
-            self.destroy_tree(parent)
+                grandparent = parent.parent
+                self.destroy_tree(parent)
+                parent = grandparent
+
     
     def set_root(self, state):
         if state.fen() in self.visited:
