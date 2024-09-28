@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 import chess
 import random
+
 from tqdm import tqdm
 
 rank_map = {
@@ -77,7 +78,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class Model(nn.Module):
-    def __init__(self, lr=1e-3, residual_blocks=5, batch_size=512, regularization_level=1e-4):
+    def __init__(self, lr=1e-3, residual_blocks=5, batch_size=64, regularization_level=1e-4):
         super(Model, self).__init__()
         
         self.initial_conv = nn.Conv2d(18, 64, kernel_size=3, padding=1)
@@ -178,9 +179,7 @@ class Model(nn.Module):
             total_loss.backward()
             self.optimizer.step()
         torch.cuda.empty_cache()
-        # reset the optimizer to be adaptive for new dataset
-        # weight decay is effectively just l2 regularization
-        # self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.c)
+        
 
         return losses
     
@@ -207,3 +206,5 @@ class Model(nn.Module):
                 return mirror_uci(action)
             return action
         
+    def reset_optimizer(self):
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.c)
