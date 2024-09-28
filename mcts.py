@@ -4,16 +4,15 @@ import numpy as np
 
 
 class MCTS:
-    def __init__(self, exploration_factor=1, cache_size=10000):
+    def __init__(self, exploration_factor=1):
         self.policy = {}
         self.Q_table = {}
         self.N = {}
         self.c = exploration_factor
+        
+        self.parent_map = {}
+        self.visited = set()
 
-        self.cache_size = int(cache_size)
-        self.access_counter = 0
-        self.state_access = {}
-    
     # UCB1
     def heuristic(self, state, action):
         if action not in self.Q_table:
@@ -27,11 +26,16 @@ class MCTS:
         s0 = state.fen()
         stack = [(s0, None, None)]
 
+
         while stack:
             s, parent, prev_a = stack.pop()
             state = chess.Board(s)
             
-            self.prune_cache()
+            if parent is not None:
+                if parent not in self.parent_map:
+                    self.parent_map[parent] = []
+                if s not in self.parent_map[parent]:
+                    self.parent_map[parent].append(s)
 
             if s in results:
                 if parent is not None:
@@ -46,7 +50,7 @@ class MCTS:
                 results[s] = [0, -1][state.is_checkmate()]
                 continue
             
-            if s not in self.state_access:
+            if s not in self.visited:
                 legal_moves = [*map(str, state.legal_moves)]
                 self.Q_table[s] = {}
                 self.N[s] = {a: 1*(a in legal_moves) for a in ACTION_SPACE}
@@ -59,22 +63,13 @@ class MCTS:
                 
                 results[s] = -v
 
-                self.state_access[s] = self.access_counter
-                self.access_counter += 1
+                self.visited.add(s)
                 continue
             
             a = max([*map(str, state.legal_moves)], key=lambda a: self.heuristic(s, a))
             state.push_uci(a)
             s2 = state.fen()
             stack.append((s2, s, a))
-
-    def prune_cache(self):
-        if len(self.state_access) >= self.cache_size:
-            oldest_state = min(self.state_access, key=self.state_access.get)
-            del self.Q_table[oldest_state]
-            del self.N[oldest_state]
-            del self.policy[oldest_state]
-            del self.state_access[oldest_state]
 
     def select_action(self, state, tau=1):
         counts = self.N[state]
@@ -90,3 +85,32 @@ class MCTS:
     def apply_dirichlet_noise(self, state: str, alpha=0.03):
         dirichlet_noise = np.random.dirichlet([alpha] * len(self.policy[state]))
         self.policy[state] = 0.75 * np.array(self.policy[state]) + 0.25 * dirichlet_noise
+
+    def collect_subtree(self, state):
+        subtree = {state}
+        if state in self.parent_map:
+            for child in self.parent_map[state]:
+                subtree.update(self.collect_subtree(child))
+        return subtree
+
+    def prune_tree(self, new_root):
+        if new_root in self.visited:
+            subtree = self.collect_subtree(new_root)
+            states_to_remove = [state for state in self.visited if state not in subtree]
+            for state in states_to_remove:
+                self.remove_state(state)
+
+    def remove_state(self, state):
+        self.Q_table.pop(state, None)
+        self.N.pop(state, None)
+        self.policy.pop(state, None)
+
+        if state in self.parent_map:
+            del self.parent_map[state]
+        
+        for _, children in self.parent_map.items():
+            if state in children:
+                children.remove(state)
+
+        self.visited.discard(state)
+
