@@ -46,7 +46,7 @@ class Trainer:
         draws = 0
         moves = []
         with multiprocessing.Pool(processes=self.cpu_count) as pool:
-            results = pool.starmap(self.run_game, [(False,) for _ in range(games)])
+            results = pool.starmap(self.run_game, [(10, False) for _ in range(games)])
 
         for winner, move in results:
             if winner == 1:
@@ -62,33 +62,47 @@ class Trainer:
             print(f"win rate: {win_rate:.2f}, draw rate: {draw_rate:.2f}, lose rate: {lose_rate:.2f}, avg moves: {avg_moves:.2f}")
         return lose_rate
     
-    def run_game(self, collect_state=False):
+    def run_game(self, depth, collect_state=False):
         state = chess.Board()
-
         player = True
-        white, black = self.model, self.target
+        white_model, black_model = self.model, self.target
+
         if random.random() < 0.5:
-            white, black = black, white
+            white_model, black_model = black_model, white_model
             player = not player
-        move = 0
+
+        white_mcts = MCTS()
+        black_mcts = MCTS()
+
+        move_count = 0
+
         while not state.is_game_over():
             if state.turn:
-                a = white.choose_move(state)
+                model = white_model
+                mcts = white_mcts
             else:
-                a = black.choose_move(state)
-                move += 1
-            state.push_uci(a)
-        
+                model = black_model
+                mcts = black_mcts
+                move_count += 1
+
+            mcts.prune_tree(state.fen())
+            for _ in range(depth):
+                mcts.search(state.copy(), model)
+            
+            move = mcts.select_action(state.fen(), tau=1e-2)
+            state.push_uci(move)
+
         if state.is_checkmate():
             outcome = [-1, 1][state.outcome().winner == player]
         else:
             outcome = 0
-        
+
         if collect_state:
             return state, player, outcome
-        return outcome, move
+        return outcome, move_count
+
     
-    def learn_policy(self, iterations, trees=300):
+    def learn_policy(self, iterations, trees=200):
         iterator = range(iterations)
         trees = trees//self.cpu_count
         if self.verbose:
@@ -113,7 +127,7 @@ class Trainer:
             random.shuffle(self.experience)
 
             if self.verbose:
-                print(f"\nexperience size: {len(self.experience)}\nupdating weights...")
+                print(f"\nexperience size: {len(self.experience)}")
             
             batch_losses = self.model.update_weights(self.experience, verbose=self.verbose)
             self.losses.extend(batch_losses)
@@ -124,17 +138,20 @@ class Trainer:
             if lose_rate <= self.threshold:
                 self.target.load_state_dict(self.model.state_dict())
                 self.target.save_model(self.path+"target.pth")
+                self.model.reset_optimizer()
             
             self.save()
             self.experience = []
 
-    def run_episode(self, model, depth=40):
+    def run_episode(self, model, depth=80):
         state = chess.Board()
         snapshot = []
 
         tree = MCTS()
         while not state.is_game_over():
             s = state.fen()
+            tree.prune_tree(s)
+
             for _ in range(depth):
                 tree.search(chess.Board(s), model)
 
