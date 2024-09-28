@@ -35,6 +35,7 @@ class MCTS:
 
         while stack:
             node = stack.pop()
+            node = self.visited.get(node.fen, node)
 
             if node.fen in results:
                 if node.parent is not None:
@@ -61,18 +62,16 @@ class MCTS:
                 continue
             
             state = node.state.copy()
-            node = self.visited[node.fen]
+            
             a = max(node.legal_moves, key=lambda a: self.heuristic(node, a))
             state.push_uci(a)
 
             s2 = state.fen()
-            child = [c for c in node.children if c.fen == s2]
-            if child:
-                child = child[0]
-            else:
-                child = child = Node(state, (node, a))
-
-            node.children.append(child)
+            child = next((c for c in node.children if c.fen == s2), None)
+            if child is None:
+                child = Node(state, (node, a))
+                node.children.append(child)
+            
             stack.append(child)
 
     def select_action(self, state, tau=1):
@@ -91,23 +90,28 @@ class MCTS:
         self.policy[state] = 0.75 * np.array(self.policy[state]) + 0.25 * dirichlet_noise
 
     def destroy_tree(self, node):
-        del self.visited[node.fen]
-        del self.policy[node.fen]
-        for child in node.children:
-            self.destroy_tree(child)
-        node.children = []
-        node.parent = None
+        if node:
+            del self.visited[node.fen]
+            del self.policy[node.fen]
+            for child in node.children:
+                self.destroy_tree(child)
+            node.children = []
+            node.parent = None
 
     def discard_above(self, state: str):
-        new_root = self.visited[state]
-        # disconnect the new root from the tree
-        parent = new_root.parent
-        new_root.parent = None
-        parent.children.remove(new_root)
-        
-        while parent:
-            parent = parent.parent
-        self.destroy_tree(parent)
+        if state in self.visited:
+            new_root = self.visited[state]
+            # disconnect the new root from the tree
+            parent = new_root.parent
+            new_root.parent = None
+            parent.children.remove(new_root)
+            
+            while parent:
+                parent = parent.parent
+            self.destroy_tree(parent)
     
     def set_root(self, state):
-        self.root = Node(state, (None, None))
+        if state.fen() in self.visited:
+            self.root = self.visited[state.fen()]
+        else:
+            self.root = Node(state, (None, None))
