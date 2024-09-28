@@ -103,8 +103,8 @@ class Trainer:
                 process = tqdm(process)
             results = []
 
-            for _ in process:
-                with multiprocessing.Pool(processes=self.cpu_count) as pool:
+            with multiprocessing.Pool(processes=self.cpu_count) as pool:
+                for _ in process:
                     results.extend(pool.starmap(self.run_episode, [(self.target,) for _ in range(self.cpu_count)]))
                 gc.collect()
 
@@ -131,21 +131,19 @@ class Trainer:
     def run_episode(self, model, depth=40):
         state = chess.Board()
         snapshot = []
+
         tree = MCTS()
         while not state.is_game_over():
-            tree.set_root(state)
             s = state.fen()
             for _ in range(depth):
-                tree.search(model)
+                tree.search(chess.Board(s), model)
 
             policy = tree.action_probabilities(s)
             snapshot.append((s, policy))
 
             a = tree.select_action(s, [1e-2, 1][len(snapshot) <= 30])
             state.push_uci(a)
-            tree.discard_above(state.fen())
-        
-        del tree
+
         reward = 0
         if state.is_checkmate():
             reward = 1
