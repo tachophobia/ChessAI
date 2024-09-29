@@ -11,6 +11,7 @@ import gc
 from model import Model
 from mcts import MCTS
 from tqdm import tqdm
+import time
 
 
 class Trainer:
@@ -45,8 +46,17 @@ class Trainer:
         wins = 0
         draws = 0
         moves = []
+
+        results = []
+        games = games//self.cpu_count * self.cpu_count
+        iterator = range(games//self.cpu_count)
+        if self.verbose:
+            print(f"\nPitting agents in {games} games\n")
+            iterator = tqdm(iterator)
         with multiprocessing.Pool(processes=self.cpu_count) as pool:
-            results = pool.starmap(self.run_game, [(10, False) for _ in range(games)])
+            for _ in iterator:
+                results.extend(pool.starmap(self.run_game, [(10, False) for _ in range(self.cpu_count)]))
+                gc.collect()
 
         for winner, move in results:
             if winner == 1:
@@ -58,7 +68,6 @@ class Trainer:
 
         if self.verbose:
             win_rate, draw_rate, avg_moves = wins/games, draws/games, sum(moves)/games
-            print(f"simulated {games} games")
             print(f"win rate: {win_rate:.2f}, draw rate: {draw_rate:.2f}, lose rate: {lose_rate:.2f}, avg moves: {avg_moves:.2f}")
         return lose_rate
     
@@ -71,8 +80,8 @@ class Trainer:
             white_model, black_model = black_model, white_model
             player = not player
 
-        white_mcts = MCTS()
-        black_mcts = MCTS()
+        white_mcts = MCTS(exploration_factor=0)
+        black_mcts = MCTS(exploration_factor=0)
 
         move_count = 0
 
@@ -89,7 +98,7 @@ class Trainer:
             for _ in range(depth):
                 mcts.search(state.copy(), model)
             
-            move = mcts.select_action(state.fen(), tau=1e-2)
+            move = mcts.select_action(state.fen(), greedy=False)
             state.push_uci(move)
 
         if state.is_checkmate():
@@ -102,7 +111,7 @@ class Trainer:
         return outcome, move_count
 
     
-    def learn_policy(self, iterations, trees=200):
+    def learn_policy(self, iterations, trees=800):
         iterator = range(iterations)
         trees = trees//self.cpu_count
         if self.verbose:
@@ -134,21 +143,20 @@ class Trainer:
             if self.verbose:
                 print(f"\nbatch loss: {sum(batch_losses)/len(batch_losses):.5f}")
 
+            self.save()
+            self.experience = []
             lose_rate = self.pit()
             if lose_rate <= self.threshold:
                 self.target.load_state_dict(self.model.state_dict())
-                self.target.save_model(self.path+"target.pth")
-                self.model.reset_optimizer()
+                self.target.save_model(self.path+"target.pth")           
             
-            self.save()
-            self.experience = []
 
-    def run_episode(self, model, depth=80):
+    def run_episode(self, model, depth=50):
         state = chess.Board()
         snapshot = []
-
+        start = time.perf_counter()
         tree = MCTS()
-        while not state.is_game_over():
+        while not state.is_game_over() and (time.perf_counter() - start < 60*10):
             s = state.fen()
             tree.prune_tree(s)
 
@@ -158,7 +166,7 @@ class Trainer:
             policy = tree.action_probabilities(s)
             snapshot.append((s, policy))
 
-            a = tree.select_action(s, [1e-2, 1][len(snapshot) <= 30])
+            a = tree.select_action(s, [True, False][len(snapshot) <= 60])
             state.push_uci(a)
 
         reward = 0
@@ -172,5 +180,6 @@ if __name__ == "__main__":
     multiprocessing.set_start_method('spawn')
     torch.multiprocessing.set_sharing_strategy('file_system')
     trainer = Trainer(verbose=True, training_directory="belisarius/")
-    # trainer.load()
+    trainer.load()
+    trainer.pit()
     trainer.learn_policy(iterations=80)

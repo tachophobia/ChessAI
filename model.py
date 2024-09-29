@@ -4,7 +4,6 @@ import torch.nn.functional as F
 
 import numpy as np
 import chess
-import random
 
 from tqdm import tqdm
 
@@ -78,7 +77,7 @@ class ResidualBlock(nn.Module):
         return out
 
 class Model(nn.Module):
-    def __init__(self, lr=1e-3, residual_blocks=5, batch_size=64, regularization_level=1e-4):
+    def __init__(self, lr=1e-3, residual_blocks=5, batch_size=256, regularization_level=1e-4):
         super(Model, self).__init__()
         
         self.initial_conv = nn.Conv2d(18, 64, kernel_size=3, padding=1)
@@ -179,32 +178,9 @@ class Model(nn.Module):
             total_loss.backward()
             self.optimizer.step()
         torch.cuda.empty_cache()
+        self.reset_optimizer()
         
-
         return losses
-    
-    def choose_move(self, state):
-        mirrored = False
-        if not state.turn:
-            state = state.mirror()
-            mirrored = True
-        
-        self.eval()
-
-        with torch.no_grad():
-            _, p = self(state.fen())
-            p = p.tolist()[0]
-            legal_moves = {*map(str, state.legal_moves)}
-            action_space = [ACTION_SPACE, MIRRORED_ACTIONS][mirrored]
-            p = [(p, a) for p, a in zip(p, action_space) if a in legal_moves]
-            weights = [p[0] for p in p]
-            actions = [p[1] for p in p]
-            if sum(weights) == 0:
-                weights = [1] * len(weights)
-            action = random.choices(actions, weights=weights)[0]
-            if mirrored:
-                return mirror_uci(action)
-            return action
         
     def reset_optimizer(self):
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.c)

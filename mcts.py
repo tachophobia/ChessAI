@@ -1,6 +1,7 @@
-from model import ACTION_SPACE
 import chess
 import numpy as np
+import random
+from model import ACTION_SPACE
 
 
 class MCTS:
@@ -71,20 +72,21 @@ class MCTS:
             s2 = state.fen()
             stack.append((s2, s, a))
 
-    def select_action(self, state, tau=1):
-        counts = self.N[state]
-        visit_counts = np.array([counts[a] for a in ACTION_SPACE]) ** (1/tau)
-        visit_counts /= visit_counts.sum()
-        return np.random.choice(ACTION_SPACE, p=visit_counts)
+    def select_action(self, state, greedy=False):
+        counts = [self.N[state][a] for a in ACTION_SPACE]
+        if not greedy:
+            return random.choices(ACTION_SPACE, weights=counts)[0]
+        else:
+            return ACTION_SPACE[np.argmax(counts)]
     
     def action_probabilities(self, state):
         counts = self.N[state]
         total = sum(counts.values())
         return [counts[a] / total for a in ACTION_SPACE]
     
-    def apply_dirichlet_noise(self, state: str, alpha=0.03):
+    def apply_dirichlet_noise(self, state: str, alpha=0.03, epsilon=0.25):
         dirichlet_noise = np.random.dirichlet([alpha] * len(self.policy[state]))
-        self.policy[state] = 0.75 * np.array(self.policy[state]) + 0.25 * dirichlet_noise
+        self.policy[state] = (1-epsilon) * np.array(self.policy[state]) + epsilon * dirichlet_noise
 
     def collect_subtree(self, state):
         subtree = {state}
