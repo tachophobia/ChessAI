@@ -17,16 +17,25 @@ def mirror_uci(move):
         move[1], move[3] = rank_map[move[1]], rank_map[move[3]]
         return ''.join(move)
 
-ACTION_SPACE = open('chess_possible_moves.txt', 'r').read().splitlines()
+ACTION_SPACE = open('features/chess_possible_moves.txt', 'r').read().splitlines()
 MIRRORED_ACTIONS = [*map(mirror_uci, ACTION_SPACE)]
 BLACK_TO_WHITE = {i: ACTION_SPACE.index(a) for i, a in enumerate(MIRRORED_ACTIONS)}
 WHITE_TO_BLACK = {v: k for k, v in BLACK_TO_WHITE.items()}
+
+UCI_TO_TENSOR = open('features/uci_to_tensor.txt', 'r').read().splitlines()
+UCI_TO_TENSOR = [*map(int, UCI_TO_TENSOR)]
+TENSOR_TO_UCI = {}
+for i, v in enumerate(UCI_TO_TENSOR):
+    if v in TENSOR_TO_UCI:
+        TENSOR_TO_UCI[v].append(i)
+    else:
+        TENSOR_TO_UCI[v] = [i]
 
 class Featurizer:
     def __init__(self):
         self.symbols = ['P', 'R', 'K', 'B', 'Q', 'K', 'p', 'r', 'k', 'b', 'q', 'k']
 
-    def featurize(self, state):
+    def transform(self, state):
         matrices = []
         board = chess.Board(state)
         if not board.turn:
@@ -59,12 +68,26 @@ class Featurizer:
 
         matrices = np.stack(matrices, axis=0)
         return matrices
+    
+    def create_tensor(self, policy):
+        tensor = np.zeros(73*8*8, dtype=np.float32)
+        for move, probability in enumerate(policy):
+            tensor[UCI_TO_TENSOR[move]] = probability
+        return tensor
+    
+    def unpack_tensor(self, tensor):
+        policy = [0]*len(ACTION_SPACE)
+        for i, probability in enumerate(tensor):
+            if i in TENSOR_TO_UCI:
+                for move in TENSOR_TO_UCI[i]:
+                    policy[move] = probability
+        return policy
 
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
         self.batchnorm1 = nn.BatchNorm2d(out_channels)
         self.batchnorm2 = nn.BatchNorm2d(out_channels)
         
@@ -77,20 +100,22 @@ class ResidualBlock(nn.Module):
         return out
 
 class Model(nn.Module):
-    def __init__(self, lr=1e-3, residual_blocks=5, batch_size=256, regularization_level=1e-4):
+    def __init__(self, lr=1e-3, residual_blocks=10, batch_size=128, regularization_level=1e-4):
         super(Model, self).__init__()
         
-        self.initial_conv = nn.Conv2d(18, 64, kernel_size=3, padding=1)
-        self.initial_batchnorm = nn.BatchNorm2d(64)
+        self.initial_conv = nn.Conv2d(18, 256, kernel_size=3, padding=1, bias=False)
+        self.initial_batchnorm = nn.BatchNorm2d(256)
         
         self.residual_blocks = nn.Sequential(
-            *[ResidualBlock(64, 64) for _ in range(residual_blocks)]
+            *[ResidualBlock(256, 256) for _ in range(residual_blocks)]
         )
         
-        self.fc_v1 = nn.Linear(64 * 8 * 8, 256)
-        self.fc_v2 = nn.Linear(256, 1)
-        self.fc_p1 = nn.Linear(64 * 8 * 8, 2048) 
-        self.fc_p2 = nn.Linear(2048, len(ACTION_SPACE))
+        self.value_in = nn.Conv2d(256, 1, kernel_size=1, bias=False)
+        self.value_fc = nn.Linear(64, 256, bias=False)
+        self.value_out = nn.Linear(256, 1, bias=False)
+
+        self.policy_in = nn.Conv2d(256, 256, kernel_size=1, bias=False)
+        self.policy_out = nn.Conv2d(256, 73, kernel_size=1, bias=True)
 
         self.lr = lr
         self.batch_size = batch_size
@@ -102,20 +127,22 @@ class Model(nn.Module):
         self.to_gpu()
 
     def forward(self, x):
-        x = self.featurizer.featurize(x)
+        x = self.featurizer.transform(x)
         x = x[np.newaxis, :, :, :]
         x = torch.from_numpy(x).float().to(self.device)
         x = F.relu(self.initial_batchnorm(self.initial_conv(x)))
         
-        x = self.residual_blocks(x)
-        
-        x = x.view(x.size(0), -1)
-        
-        v = F.dropout(F.relu(self.fc_v1(x)), p=0.3, training=self.training)
-        v = torch.tanh(self.fc_v2(v))
-        
-        p = F.dropout(F.relu(self.fc_p1(x)), p=0.3, training=self.training)
-        p = F.softmax(self.fc_p2(p), dim=1)
+        x = self.residual_blocks(x)  
+
+        v = F.relu(self.value_in(x))
+        v = v.view(v.size(0), -1)
+        v = F.relu(self.value_fc(v))
+        v = F.tanh(self.value_out(v))
+
+        p = F.relu(self.policy_in(x))
+        p = self.policy_out(p)
+        p = p.view(p.size(0), -1)    
+        p = F.softmax(p, dim=1)
         
         return v, p
     
@@ -134,6 +161,7 @@ class Model(nn.Module):
             v, p = self.forward(x)
             p = p.tolist()[0]
             v = v.tolist()[0][0]
+            p = self.featurizer.unpack_tensor(p)
             if x.split()[1] == 'b':
                 p = sorted(p, key=lambda a: BLACK_TO_WHITE[p.index(a)])
         return v, p
@@ -162,12 +190,11 @@ class Model(nn.Module):
                     policy = sorted(policy, key=lambda a: WHITE_TO_BLACK[policy.index(a)])
 
                 predicted_v, predicted_p = self(state)
-                policy = torch.tensor(policy).to(self.device)
+                policy = torch.from_numpy(self.featurizer.create_tensor(policy)).to(self.device)
                 reward = torch.tensor([[reward]]).to(self.device)
                 
                 value_loss = torch.square(predicted_v - reward).mean()
                 policy_loss = torch.sum(-policy * torch.log(predicted_p + 1e-8), dim=1).mean()
-
                 total_loss += value_loss
                 total_loss += policy_loss
             
@@ -177,9 +204,7 @@ class Model(nn.Module):
             self.optimizer.zero_grad()
             total_loss.backward()
             self.optimizer.step()
-        torch.cuda.empty_cache()
-        self.reset_optimizer()
-        
+        torch.cuda.empty_cache()        
         return losses
         
     def reset_optimizer(self):
