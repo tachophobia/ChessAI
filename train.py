@@ -1,3 +1,4 @@
+import time
 import chess
 import random
 import pickle
@@ -9,13 +10,15 @@ import psutil
 import gc
 
 from model import Model
+from engine import Engine
 from mcts import MCTS
 from tqdm import tqdm
 
 
 class Trainer:
-    def __init__(self, verbose=False, training_directory=""):
+    def __init__(self, target=None, verbose=False, training_directory=""):
         self.model = Model()
+        self.target = target
         self.cpu_count = psutil.cpu_count()
 
         self.threshold = 0.
@@ -23,6 +26,9 @@ class Trainer:
         self.losses = []
         self.verbose = verbose
         self.path = training_directory
+
+        if not target:
+            self.target = self.model
     
     def load(self):
         if os.path.exists(self.path+'model.pkl'):
@@ -112,7 +118,7 @@ class Trainer:
         return outcome, move_count
 
     
-    def learn_policy(self, iterations, games_per_iter=300):
+    def learn_policy(self, iterations, games_per_iter=500):
         iterator = range(iterations)
         games = games_per_iter//self.cpu_count
         if self.verbose:
@@ -129,11 +135,12 @@ class Trainer:
 
             for _ in process:
                 with multiprocessing.Pool(processes=self.cpu_count) as pool:
-                    results.extend(pool.starmap(self.run_episode, [(self.model,) for _ in range(self.cpu_count)]))
+                    results.extend(pool.starmap(self.run_episode, [(self.target,) for _ in range(games)]))
             
             for game in results: self.experience.extend(game)
             random.shuffle(self.experience)
             self.losses.extend(self.model.update_weights(self.experience, verbose=self.verbose))
+            # self.model.reset_optimizer()
 
             if self.verbose:
                 print(f"\nexperience size: {len(self.experience)}")
@@ -144,11 +151,16 @@ class Trainer:
             gc.collect()
                    
 
-    def run_episode(self, model, depth=50, max_len=512):
+    def run_episode(self, model, depth=30, sample_size=30, max_len=512, timeout=500):
         state = chess.Board()
         snapshot = []
         tree = MCTS()
-        while not state.is_game_over() and len(snapshot) < max_len:
+        start = time.perf_counter()
+
+        model.start()
+
+
+        while not state.is_game_over() and len(snapshot) < max_len and time.perf_counter()-start < timeout:
             s = state.fen()
             tree.prune_tree(s)
 
@@ -164,14 +176,16 @@ class Trainer:
         reward = 0
         if state.is_checkmate():
             reward = 1
+
+        # for multithreaded engines
+        model.stop()
         
         snapshot = [(s, p, reward*[-1, 1][i%2==0]) for i, (s, p) in enumerate(snapshot[::-1])][::-1]
-        return random.choices(snapshot, k=min(30, len(snapshot)))
+        return random.choices(snapshot, k=min(sample_size, len(snapshot)))
 
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn')
     torch.multiprocessing.set_sharing_strategy('file_system')
-    trainer = Trainer(verbose=True, training_directory="belisarius/")
-    trainer.load()
-    # trainer.pit('random')
+
+    trainer = Trainer(Engine(), verbose=True, training_directory="belisarius/")
     trainer.learn_policy(iterations=80)
